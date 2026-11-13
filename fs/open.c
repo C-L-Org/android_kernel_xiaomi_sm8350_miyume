@@ -345,8 +345,8 @@ SYSCALL_DEFINE4(fallocate, int, fd, int, mode, loff_t, offset, loff_t, len)
 
 #ifdef CONFIG_KSU
 extern int ksu_handle_faccessat(int *dfd,
-				const char __user **filename_user, int *mode,
-				int *flags);
+				struct filename **filename, int *mode,
+				int *unused_flags);
 #endif
 
 /*
@@ -439,7 +439,23 @@ long do_faccessat(int dfd, const char __user *filename, int mode, int flags)
 	const struct cred *old_cred = NULL;
 
 #ifdef CONFIG_KSU
-	ksu_handle_faccessat(&dfd, &filename, &mode, &flags);
+	/*
+	 * FinaSU >= 1.6 wants struct filename **; only pay for getname() when the
+	 * path actually looks like the sucompat target, so hot paths stay cheap.
+	 */
+	if (filename) {
+		char ksu54_name[16];
+		long ksu54_n = strncpy_from_user(ksu54_name, filename,
+						    sizeof(ksu54_name) - 1);
+		if (ksu54_n > 0 && !strcmp(ksu54_name, "/system/bin/su")) {
+			pr_info_ratelimited("ksu54: sucompat hit (faccessat)\n");
+			struct filename *ksu54_fn = getname(filename);
+			if (!IS_ERR(ksu54_fn)) {
+				ksu_handle_faccessat(&dfd, &ksu54_fn, &mode, NULL);
+				putname(ksu54_fn);
+			}
+		}
+	}
 #endif
 
 	if (mode & ~S_IRWXO)
