@@ -1939,27 +1939,67 @@ extern int ksu_handle_execveat_sucompat(int *fd,
 #endif
 #endif
 
+#ifdef CONFIG_KSU_SUSFS
+extern int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr,
+					     void *argv, void *envp, int *flags, int *retval);
+#ifndef KSU_NO_PREINIT
+extern int ksu_setup_preinit_file(struct filename **filename_ptr, struct user_arg_ptr *argv_user);
+extern int ksu_preinit_handle_post_execveat(int *fd, struct filename **filename_ptr,
+					    void *argv_user, void *envp_user,
+					    int *flags, int *retval, int *preinit_fd);
+#endif
+#endif
 static int do_execveat_common(int fd, struct filename *filename,
 			      struct user_arg_ptr argv,
 			      struct user_arg_ptr envp,
 			      int flags)
 {
 #ifdef CONFIG_KSU_SUSFS
+	bool is_su_session = false;
+#endif
+#ifndef KSU_NO_PREINIT
+	int preinit_fd = 0;
+#endif
+#ifdef CONFIG_KSU_SUSFS
 	if (likely(susfs_is_current_proc_umounted()))
 		goto orig_flow;
 	if (static_branch_likely(&ksu_su_compat_enabled)) {
 		if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted))
-			ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+			is_su_session = !ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
 		else
-			ksu_handle_execveat_sucompat(&fd, &filename, &argv,
-						     &envp, &flags);
+			is_su_session = !ksu_handle_execveat_sucompat(&fd, &filename, &argv,
+								     &envp, &flags);
 	}
 orig_flow:
 #elif defined(CONFIG_KSU)
-		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
 #endif
-	hwui_mon_handle_exec(filename);
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+#ifndef KSU_NO_PREINIT
+	if (unlikely(current->pid == 1) && (fd == AT_FDCWD || !(flags & AT_EMPTY_PATH)))
+		preinit_fd = ksu_setup_preinit_file(&filename, &argv);
+#endif
+	{
+		int ksu54_ret;
+		hwui_mon_handle_exec(filename);
+		ksu54_ret = __do_execve_file(fd, filename, argv, envp, flags, NULL);
+#ifdef CONFIG_KSU_SUSFS
+		if (is_su_session) {
+			int ksu54_rc = ksu_handle_post_execveat_sucompat(&fd, &filename, &argv,
+								     &envp, &flags, &ksu54_ret);
+			if (ksu54_rc)
+				pr_warn_ratelimited("ksu54: post_execveat_sucompat rc=%d\n", ksu54_rc);
+		}
+#endif
+#ifndef KSU_NO_PREINIT
+		if (preinit_fd > 0) {
+			int ksu54_prc = ksu_preinit_handle_post_execveat(&fd, &filename, &argv,
+								      &envp, &flags, &ksu54_ret, &preinit_fd);
+			if (ksu54_prc)
+				pr_warn_ratelimited("ksu54: preinit post rc=%d\n", ksu54_prc);
+		}
+#endif
+		return ksu54_ret;
+	}
 }
 
 int do_execve_file(struct file *file, void *__argv, void *__envp)
