@@ -1994,8 +1994,13 @@ orig_flow:
 		if (preinit_fd > 0) {
 			int ksu54_prc = ksu_preinit_handle_post_execveat(&fd, &filename, &argv,
 								      &envp, &flags, &ksu54_ret, &preinit_fd);
-			if (ksu54_prc)
-				pr_warn_ratelimited("ksu54: preinit post rc=%d\n", ksu54_prc);
+			if (ksu54_prc) {
+				/* 上游语义：runner exec 失败时 ksu_preinit_handle_post_execveat
+				 * 已把 filename 还原成 /system/bin/init 并 close 预置 fd，
+				 * 调用方必须重跑一次原始 exec，否则 pid1 的 init 直接失败。 */
+				pr_warn_ratelimited("ksu54: preinit exec failed, retry original\n");
+				ksu54_ret = __do_execve_file(fd, filename, argv, envp, flags, NULL);
+			}
 		}
 #endif
 		return ksu54_ret;
