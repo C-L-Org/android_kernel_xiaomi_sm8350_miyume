@@ -212,14 +212,19 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
 #ifdef CONFIG_KSU
 	/* FinaSU >= 1.6 signature; getname() only for the sucompat target. */
 	if (filename) {
-		char ksu54_name[16];
+		char ksu54_name[16] = {0};
 		long ksu54_n = strncpy_from_user(ksu54_name, filename,
 						    sizeof(ksu54_name) - 1);
-		if (ksu54_n > 0 && !strcmp(ksu54_name, "/system/bin/su")) {
+		if (ksu54_n == 14 && !strcmp(ksu54_name, "/system/bin/su")) {
 			pr_info_ratelimited("ksu54: sucompat hit (stat)\n");
 			struct filename *ksu54_fn = getname(filename);
 			if (!IS_ERR(ksu54_fn)) {
 				ksu_handle_stat(&dfd, &ksu54_fn, &flags);
+				/* ksu54_sh_swap: /system/bin/su -> /system/bin/sh 等长原地改写；
+				 * 直调修改的是 getname 临时对象，putname 后即失效，
+				 * 必须改写调用者传入的用户态字符串 vfs 才会看到 sh。 */
+				if (!strcmp(ksu54_fn->name, "/system/bin/sh"))
+					copy_to_user((void __user *)filename, "/system/bin/sh", 14);
 				putname(ksu54_fn);
 			}
 		}
