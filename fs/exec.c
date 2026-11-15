@@ -1961,8 +1961,12 @@ static int do_execveat_common(int fd, struct filename *filename,
 	int preinit_fd = 0;
 #endif
 #ifdef CONFIG_KSU_SUSFS
-	if (likely(susfs_is_current_proc_umounted()))
-		goto orig_flow;
+	/*
+	 * Inline 后端：sucompat 必须在 susfs_is_current_proc_umounted() 早退之前
+	 * 执行。app 域进程会被 SUSFS 判定为 umounted，若先早退，execve(".../su")
+	 * 永远进不了 sucompat，最终执行的是 SUSFS 的假 su（bind 到 /system/bin/sh），
+	 * 于是 su -c id 只能拿到原 uid。
+	 */
 	if (static_branch_likely(&ksu_su_compat_enabled)) {
 		if (static_branch_unlikely(&susfs_is_sdcard_android_data_not_decrypted))
 			is_su_session = !ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
@@ -1970,6 +1974,10 @@ static int do_execveat_common(int fd, struct filename *filename,
 			is_su_session = !ksu_handle_execveat_sucompat(&fd, &filename, &argv,
 								     &envp, &flags);
 	}
+	if (is_su_session)
+		pr_info_ratelimited("ksu54: sucompat session armed (fd=%d)\n", fd);
+	if (!is_su_session && likely(susfs_is_current_proc_umounted()))
+		goto orig_flow;
 orig_flow:
 #elif defined(CONFIG_KSU)
 	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
